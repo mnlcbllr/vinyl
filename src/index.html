@@ -982,6 +982,16 @@
         return null;
       }
 
+      // Predownload the next track's audio so /stream serves it from cache instantly.
+      const _predownloaded = new Set();
+      function predownloadTrack(tr) {
+        if (!tr || !tr.ytId) return;
+        if (_predownloaded.has(tr.ytId)) return;
+        _predownloaded.add(tr.ytId);
+        // Hit /preload which downloads in the background server-side without streaming back
+        fetch(`${API_BASE}/preload?id=${encodeURIComponent(tr.ytId)}`).catch(() => {});
+      }
+
       // ── Audio event wiring ────────────────────────────────────────────
       function fmtTime(sec) {
         if (!isFinite(sec) || isNaN(sec) || sec < 0) return "--:--";
@@ -1375,7 +1385,8 @@
         if (audio.paused) {
           // If nothing loaded yet, load current track first
           if (!audio.src || audio.src === window.location.href) {
-            loadTrack(false);
+            loadTrack(true);
+            return;
           }
           audio.play().catch((err) => {
             if (err.name !== "AbortError") console.error("[play]", err);
@@ -1479,6 +1490,8 @@
           if (added > 0) {
             renderQueue();
             resolveDurations();
+            // Prefetch CDN URL for the next track so it's instant
+            if (tracks.length > 1) predownloadTrack(tracks[1]);
           }
         } catch (e) {
           console.warn("[prefill] failed:", e.message);
@@ -1545,6 +1558,9 @@
             }
           });
         }
+
+        // Prefetch next track's server-side CDN URL cache so it's ready when this one ends
+        if (tracks.length > 1) predownloadTrack(tracks[1]);
 
         // Fetch real duration from server if unknown
         if (tr.ytId && (!tr.durSec || tr.dur === "?:??")) {

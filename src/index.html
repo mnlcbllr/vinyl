@@ -730,6 +730,19 @@
             </div>
           </div>
 
+          <!-- Keyboard Shortcuts -->
+          <div>
+            <div class="flex items-center justify-between mb-2.5">
+              <label class="font-mono text-[9px] text-muted tracking-widest uppercase">Keyboard Shortcuts</label>
+              <button
+                onclick="resetKeybindings()"
+                class="font-mono text-[8px] text-muted hover:text-accent border border-border hover:border-accent bg-transparent cursor-pointer rounded px-2 py-0.5 transition-colors"
+              >RESET</button>
+            </div>
+            <div id="keybindings-list" class="space-y-0.5 max-h-[200px] overflow-y-auto pr-1"></div>
+            <div class="font-mono text-[8px] text-muted mt-2 opacity-60">Click a key to rebind. Press Escape to cancel. 1-9 and Ctrl+F are fixed.</div>
+          </div>
+
           <!-- Music Library Folder -->
           <div>
             <label class="font-mono text-[9px] text-muted tracking-widest uppercase block mb-2.5">Music Library Folder</label>
@@ -1736,37 +1749,350 @@
       });
 
       // ── Keyboard shortcuts ────────────────────────────────────────────
-      document.addEventListener("keydown", (e) => {
-        // Don't intercept when typing in an input
-        if (e.target.tagName === "INPUT") return;
-        if (e.code === "Space") {
-          e.preventDefault();
-          togglePlay();
+      // ── Keyboard shortcuts system ──────────────────────────────────
+      // ── Section focus & item selection ─────────────────────────────
+      const SECTIONS = ["queue", "yt", "lib"];
+      const SECTION_LABELS = { queue: "Queue", yt: "YouTube Results", lib: "Local Library" };
+      let focusedSection = "queue";
+      let selectedIndex = -1; // -1 = nothing selected
+
+      function getSectionItems(section) {
+        if (section === "queue") return document.querySelectorAll("#queue-list > div[draggable]");
+        if (section === "yt") return document.querySelectorAll("#yt-list > div.flex.items-center");
+        if (section === "lib") return document.querySelectorAll("#lib-list > div.flex.items-center");
+        return [];
+      }
+
+      function clearItemHighlight() {
+        document.querySelectorAll("[data-kbd-selected]").forEach(el => {
+          el.removeAttribute("data-kbd-selected");
+          el.style.outline = "";
+          el.style.outlineOffset = "";
+          el.style.backgroundColor = "";
+          el.style.borderRadius = "";
+        });
+      }
+
+      function highlightItem() {
+        clearItemHighlight();
+        const items = getSectionItems(focusedSection);
+        if (selectedIndex < 0 || selectedIndex >= items.length) return;
+        const el = items[selectedIndex];
+        el.setAttribute("data-kbd-selected", "true");
+        el.style.outline = `2px solid var(--color-accent)`;
+        el.style.outlineOffset = "-2px";
+        el.style.backgroundColor = "color-mix(in srgb, var(--color-accent) 12%, transparent)";
+        el.style.borderRadius = "6px";
+        el.scrollIntoView({ block: "nearest" });
+      }
+
+      function getSectionContainer(section) {
+        if (section === "queue") return document.getElementById("queue-list")?.closest(".bg-surface");
+        if (section === "yt") return document.getElementById("yt-list")?.closest(".bg-surface");
+        if (section === "lib") return document.getElementById("lib-list")?.closest(".bg-surface");
+        return null;
+      }
+
+      function clearSectionHighlight() {
+        document.querySelectorAll("[data-kbd-section]").forEach(el => {
+          el.removeAttribute("data-kbd-section");
+          el.style.borderColor = "";
+          el.style.boxShadow = "";
+        });
+      }
+
+      function highlightSection() {
+        clearSectionHighlight();
+        const container = getSectionContainer(focusedSection);
+        if (!container) return;
+        container.setAttribute("data-kbd-section", "true");
+        container.style.borderColor = "var(--color-accent)";
+        container.style.boxShadow = "0 0 8px color-mix(in srgb, var(--color-accent) 20%, transparent)";
+      }
+
+      function showSectionIndicator() {
+        let indicator = document.getElementById("section-indicator");
+        if (!indicator) {
+          indicator = document.createElement("div");
+          indicator.id = "section-indicator";
+          indicator.className = "fixed top-3 left-1/2 -translate-x-1/2 z-50 font-mono text-[10px] text-bg bg-accent px-3 py-1 rounded-full pointer-events-none transition-opacity duration-300";
+          document.body.appendChild(indicator);
         }
-        if (e.code === "ArrowRight") {
-          audio.currentTime = Math.min(
-            audio.duration || 0,
-            audio.currentTime + 10,
-          );
+        indicator.textContent = SECTION_LABELS[focusedSection];
+        indicator.style.opacity = "1";
+        clearTimeout(indicator._timer);
+        indicator._timer = setTimeout(() => { indicator.style.opacity = "0"; }, 2000);
+      }
+
+      function focusSection(section) {
+        focusedSection = section;
+        selectedIndex = -1;
+        clearItemHighlight();
+        // Ensure the section is expanded
+        const bodyId = section === "queue" ? "queue-body" : section === "lib" ? "lib-body" : null;
+        if (bodyId) {
+          const body = document.getElementById(bodyId);
+          if (body && body.classList.contains("collapsed")) {
+            const chevronId = section === "queue" ? "queue-chevron" : "lib-chevron";
+            toggleSection(bodyId, chevronId);
+          }
         }
-        if (e.code === "ArrowLeft") {
-          audio.currentTime = Math.max(0, audio.currentTime - 10);
+        highlightSection();
+        showSectionIndicator();
+      }
+
+      function cycleSection(forward) {
+        const idx = SECTIONS.indexOf(focusedSection);
+        const next = forward
+          ? SECTIONS[(idx + 1) % SECTIONS.length]
+          : SECTIONS[(idx - 1 + SECTIONS.length) % SECTIONS.length];
+        focusSection(next);
+      }
+
+      function selectItem(delta) {
+        const items = getSectionItems(focusedSection);
+        if (!items.length) return;
+        if (selectedIndex < 0) {
+          selectedIndex = delta > 0 ? 0 : items.length - 1;
+        } else {
+          selectedIndex = Math.max(0, Math.min(items.length - 1, selectedIndex + delta));
         }
-        if (e.code === "ArrowUp") {
-          e.preventDefault();
+        highlightItem();
+      }
+
+      function activateSelectedItem() {
+        const items = getSectionItems(focusedSection);
+        if (selectedIndex < 0 || selectedIndex >= items.length) return;
+        const el = items[selectedIndex];
+        // Click the title/content area to trigger play
+        const clickTarget = el.querySelector(".flex-1.min-w-0, .flex-1") || el;
+        clickTarget.click();
+      }
+
+      const DEFAULT_KEYMAP = {
+        playPause:   { keys: ["Space"], label: "Play / Pause" },
+        nextTrack:   { keys: ["KeyN"], label: "Next Track" },
+        prevTrack:   { keys: ["KeyP"], label: "Previous Track" },
+        seekForward: { keys: ["ArrowRight"], label: "Seek Forward" },
+        seekBack:    { keys: ["ArrowLeft"], label: "Seek Back" },
+        volUp:       { keys: ["ArrowUp"], label: "Volume Up" },
+        volDown:     { keys: ["ArrowDown"], label: "Volume Down" },
+        mute:        { keys: ["KeyM"], label: "Mute / Unmute" },
+        toggleLoop:  { keys: ["KeyL"], label: "Toggle Loop" },
+        toggleShuffle: { keys: ["KeyS"], label: "Toggle Shuffle" },
+        toggleAutoplay: { keys: ["KeyA"], label: "Cycle Autoplay" },
+        search:      { keys: ["Slash"], label: "Search" },
+        settings:    { keys: ["Comma"], label: "Settings" },
+        selectDown:  { keys: ["KeyJ"], label: "Select Down" },
+        selectUp:    { keys: ["KeyK"], label: "Select Up" },
+        selectPlay:  { keys: ["Enter"], label: "Play Selected" },
+        sectionNext: { keys: ["Tab"], label: "Next Section" },
+        sectionPrev: { keys: ["Backquote"], label: "Prev Section" },
+      };
+
+      // Deep clone defaults, then override with saved bindings
+      let keymap = JSON.parse(JSON.stringify(DEFAULT_KEYMAP));
+
+      function codeToLabel(code) {
+        if (code.startsWith("Key")) return code.slice(3);
+        if (code.startsWith("Digit")) return code.slice(5);
+        const map = {
+          Space: "Space", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left",
+          ArrowRight: "Right", Comma: ",", Period: ".", Slash: "/",
+          Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]",
+          Backquote: "`", Minus: "-", Equal: "=", Backslash: "\\",
+          Enter: "Enter", Backspace: "Bksp", Tab: "Tab", Delete: "Del",
+        };
+        return map[code] || code;
+      }
+
+      // Build reverse lookup: code → action id
+      let keyLookup = {};
+      function rebuildKeyLookup() {
+        keyLookup = {};
+        for (const [action, binding] of Object.entries(keymap)) {
+          for (const code of binding.keys) {
+            keyLookup[code] = action;
+          }
+        }
+      }
+      rebuildKeyLookup();
+
+      // Action handlers
+      const shortcutActions = {
+        playPause() { togglePlay(); },
+        nextTrack() { nextTrack(); },
+        prevTrack() { prevTrack(); },
+        seekForward(e) {
+          const step = e.shiftKey ? 30 : 10;
+          audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + step);
+        },
+        seekBack(e) {
+          const step = e.shiftKey ? 30 : 10;
+          audio.currentTime = Math.max(0, audio.currentTime - step);
+        },
+        volUp() {
           updateVol(Math.min(100, Math.round(audio.volume * 100) + 5));
-          document.getElementById("vol-slider").value = Math.round(
-            audio.volume * 100,
-          );
-        }
-        if (e.code === "ArrowDown") {
-          e.preventDefault();
+          document.getElementById("vol-slider").value = Math.round(audio.volume * 100);
+        },
+        volDown() {
           updateVol(Math.max(0, Math.round(audio.volume * 100) - 5));
-          document.getElementById("vol-slider").value = Math.round(
-            audio.volume * 100,
-          );
+          document.getElementById("vol-slider").value = Math.round(audio.volume * 100);
+        },
+        mute() {
+          if (audio.volume > 0) {
+            audio._prevVol = audio.volume;
+            updateVol(0);
+          } else {
+            updateVol(Math.round((audio._prevVol || 0.8) * 100));
+          }
+          document.getElementById("vol-slider").value = Math.round(audio.volume * 100);
+        },
+        toggleLoop() { toggleLoop(); },
+        toggleShuffle() { toggleShuffle(); },
+        toggleAutoplay() { toggleAutoplay(); },
+        search() { document.getElementById("search-input").focus(); },
+        settings() { toggleSettings(); },
+        selectDown() { selectItem(1); },
+        selectUp() { selectItem(-1); },
+        selectPlay() { activateSelectedItem(); },
+        sectionNext() { cycleSection(true); },
+        sectionPrev() { cycleSection(false); },
+      };
+
+      // Currently rebinding shortcut (null or action id)
+      let rebindingAction = null;
+
+      document.addEventListener("keydown", (e) => {
+        const inInput = e.target.tagName === "INPUT";
+
+        // Handle rebinding mode
+        if (rebindingAction) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.code === "Escape") {
+            // Cancel rebind
+            rebindingAction = null;
+            renderKeybindings();
+            return;
+          }
+          // Remove this key from any other action
+          for (const [id, binding] of Object.entries(keymap)) {
+            binding.keys = binding.keys.filter(k => k !== e.code);
+          }
+          // Set new key
+          keymap[rebindingAction].keys = [e.code];
+          rebindingAction = null;
+          rebuildKeyLookup();
+          renderKeybindings();
+          saveKeybindings();
+          return;
+        }
+
+        // Escape — clear selection, close search/settings, or blur input
+        if (e.code === "Escape") {
+          if (inInput) { e.target.blur(); return; }
+          if (selectedIndex >= 0 || document.querySelector("[data-kbd-section]")) {
+            selectedIndex = -1;
+            clearItemHighlight();
+            clearSectionHighlight();
+            return;
+          }
+          const settingsEl = document.getElementById("settings-overlay");
+          if (settingsEl && settingsEl.classList.contains("open")) { toggleSettings(); return; }
+          closeSearch();
+          return;
+        }
+
+        // Ctrl/Cmd+F — always focus search
+        if ((e.ctrlKey || e.metaKey) && e.code === "KeyF") {
+          e.preventDefault();
+          document.getElementById("search-input").focus();
+          return;
+        }
+
+        // Section switching works even from inputs (Tab/` to navigate sections)
+        const sectionAction = keyLookup[e.code];
+        if (sectionAction === "sectionNext" || sectionAction === "sectionPrev") {
+          e.preventDefault();
+          if (inInput) e.target.blur();
+          shortcutActions[sectionAction](e);
+          return;
+        }
+
+        // Don't intercept other keys when typing in an input
+        if (inInput) return;
+
+        // 1-9 — jump to queue position (not rebindable)
+        if (e.code >= "Digit1" && e.code <= "Digit9") {
+          const idx = parseInt(e.code.replace("Digit", "")) - 1;
+          if (idx < tracks.length) skipToTrack(idx);
+          return;
+        }
+
+        // Look up action from keymap
+        const action = keyLookup[e.code];
+        if (action && shortcutActions[action]) {
+          e.preventDefault();
+          shortcutActions[action](e);
         }
       });
+
+      function renderKeybindings() {
+        const container = document.getElementById("keybindings-list");
+        if (!container) return;
+        container.innerHTML = "";
+        for (const [id, binding] of Object.entries(keymap)) {
+          const row = document.createElement("div");
+          row.className = "flex items-center justify-between py-1.5";
+          const keyDisplay = binding.keys.length ? binding.keys.map(codeToLabel).join(", ") : "—";
+          const isRebinding = rebindingAction === id;
+          row.innerHTML = `
+            <span class="font-mono text-[10px] text-txt">${binding.label}</span>
+            <button
+              class="font-mono text-[10px] px-2.5 py-1 rounded-md border cursor-pointer transition-colors min-w-[60px] text-center ${
+                isRebinding
+                  ? "bg-accent text-bg border-accent"
+                  : "bg-surface text-muted border-border hover:border-accent hover:text-accent"
+              }"
+              data-action="${id}"
+            >${isRebinding ? "press a key..." : keyDisplay}</button>
+          `;
+          row.querySelector("button").addEventListener("click", () => {
+            rebindingAction = rebindingAction === id ? null : id;
+            renderKeybindings();
+          });
+          container.appendChild(row);
+        }
+      }
+
+      function saveKeybindings() {
+        // Save only the keys (not labels) to keep storage small
+        const data = {};
+        for (const [id, binding] of Object.entries(keymap)) {
+          data[id] = binding.keys;
+        }
+        if (isElectron) window.electronAPI.storeSet("keybindings", data);
+      }
+
+      async function loadKeybindings() {
+        if (!isElectron) return;
+        const saved = await window.electronAPI.storeGet("keybindings", null);
+        if (!saved) return;
+        for (const [id, keys] of Object.entries(saved)) {
+          if (keymap[id] && Array.isArray(keys)) {
+            keymap[id].keys = keys;
+          }
+        }
+        rebuildKeyLookup();
+      }
+
+      function resetKeybindings() {
+        keymap = JSON.parse(JSON.stringify(DEFAULT_KEYMAP));
+        rebuildKeyLookup();
+        renderKeybindings();
+        saveKeybindings();
+      }
 
       // ── Online / Offline toggle ───────────────────────────────────────
       function toggleMode() {
@@ -2195,6 +2521,7 @@
       function toggleSettings() {
         settingsOpen = !settingsOpen;
         document.getElementById("settings-overlay").classList.toggle("open", settingsOpen);
+        if (settingsOpen) renderKeybindings();
       }
 
       // ── Theme Color ─────────────────────────────────────────────────
@@ -2325,6 +2652,8 @@
           customMusicDir = dir;
           updateMusicDirDisplay(dir);
         }
+        await loadKeybindings();
+        renderKeybindings();
       }
 
       renderQueue();

@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Space Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/space-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Space Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/space-mono-400i.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Space Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/space-mono-700.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 300 500;
+  font-display: swap;
+  src: url("./fonts/dm-sans-latin.woff2") format("woff2");
+}
+
+@theme {
+  --font-mono: "Space Mono", monospace;
+  --font-sans: "DM Sans", sans-serif;
+
+  --color-bg: #0d0a0a;
+  --color-panel: #140c0c;
+  --color-surface: #1c1010;
+  --color-border: #2e1a1a;
+  --color-accent: #e02828;
+  --color-accent2: #b01414;
+  --color-accent3: #ff5555;
+  --color-muted: #6b4f4f;
+  --color-txt: #eddada;
+
+  --shadow-accent: 0 0 8px #e02828;
+  --shadow-accent-lg: 0 0 20px rgba(224, 40, 40, 0.28);
+  --shadow-accent-sm: 0 0 6px #e02828;
+
+  --animate-spin-slow: spin 4s linear infinite;
+  --animate-pulse-ring: pulse-ring 2s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-ring {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}

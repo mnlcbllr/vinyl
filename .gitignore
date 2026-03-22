@@ -1,0 +1,9 @@
+.claude
+node_modules
+dist
+build
+*.log
+*.tmp
+*.env
+
+*.part

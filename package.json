@@ -2,13 +2,19 @@
   "name": "vinyl",
   "version": "1.0.0",
   "description": "Vinyl — a private YouTube audio player",
+  "author": "Vinyl <vinyl@vinyl.io>",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "css": "tailwindcss -i src/input.css -o src/output.css",
     "css:watch": "tailwindcss -i src/input.css -o src/output.css --watch",
     "start": "npm run css && electron .",
     "dev": "npm run css && electron . --dev",
-    "build": "npm run css && electron-builder"
+    "build": "npm run css && electron-builder",
+    "build:win": "npm run css && electron-builder --win",
+    "build:linux": "npm run css && electron-builder --linux AppImage && npm run build:rpm",
+    "build:rpm": "rpmbuild -bb --define \"_topdir $(pwd)/rpm-build\" --define \"_sourcedir $(pwd)/dist\" --define \"_rpmdir $(pwd)/dist\" --define \"_build_id_links none\" --define \"source_date_epoch_from_changelog 0\" --define \"_appdir $(pwd)/dist/linux-unpacked\" --define \"_iconsdir $(pwd)/build/icons\" build/vinyl.spec && mv dist/x86_64/*.rpm dist/ && rmdir dist/x86_64",
+    "build:all": "npm run css && electron-builder --win --linux AppImage && npm run build:rpm"
   },
   "build": {
     "appId": "io.vinyl.player",
@@ -16,15 +22,51 @@
     "directories": {
       "output": "dist"
     },
-    "mac": {
-      "category": "public.app-category.music"
-    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "server.mjs",
+      "src/index.html",
+      "src/output.css",
+      "src/fonts/**/*",
+      "node_modules/**/*"
+    ],
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis",
+        "msi"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "msi": {
+      "oneClick": false,
+      "perMachine": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "linux": {
-      "target": "AppImage"
-    }
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icons",
+      "category": "Audio",
+      "desktop": {
+        "Name": "Vinyl",
+        "Comment": "Private YouTube audio player",
+        "Terminal": "false",
+        "Type": "Application",
+        "Categories": "Audio;Music;Player;"
+      }
+    },
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns"
+    },
+    "asar": true
   },
   "dependencies": {
     "cors": "^2.8.5",

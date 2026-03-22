@@ -1,9 +1,8 @@
 .claude
 node_modules
 dist
-build
+rpm-build
 *.log
 *.tmp
 *.env
-
 *.part

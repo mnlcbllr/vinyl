@@ -36,19 +36,19 @@
   --font-mono: "Space Mono", monospace;
   --font-sans: "DM Sans", sans-serif;
 
-  --color-bg: #0d0a0a;
-  --color-panel: #140c0c;
-  --color-surface: #1c1010;
-  --color-border: #2e1a1a;
-  --color-accent: #e02828;
-  --color-accent2: #b01414;
-  --color-accent3: #ff5555;
-  --color-muted: #6b4f4f;
-  --color-txt: #eddada;
+  --color-bg: #0d0d0d;
+  --color-panel: #141414;
+  --color-surface: #1c1c1c;
+  --color-border: #2e2e2e;
+  --color-accent: #555353;
+  --color-accent2: #3d3b3b;
+  --color-accent3: #7a7878;
+  --color-muted: #6b6b6b;
+  --color-txt: #e0dede;
 
-  --shadow-accent: 0 0 8px #e02828;
-  --shadow-accent-lg: 0 0 20px rgba(224, 40, 40, 0.28);
-  --shadow-accent-sm: 0 0 6px #e02828;
+  --shadow-accent: 0 0 8px #555353;
+  --shadow-accent-lg: 0 0 20px rgba(85, 83, 83, 0.28);
+  --shadow-accent-sm: 0 0 6px #555353;
 
   --animate-spin-slow: spin 4s linear infinite;
   --animate-pulse-ring: pulse-ring 2s ease-in-out infinite;

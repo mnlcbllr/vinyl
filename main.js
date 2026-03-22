@@ -19,7 +19,7 @@ function createWindow() {
     minWidth: 780,
     minHeight: 560,
     titleBarStyle: "hiddenInset",
-    backgroundColor: "#0d0a0a",
+    backgroundColor: "#0d0d0d",
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

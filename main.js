@@ -13,12 +13,16 @@ async function startApiServer() {
 }
 
 function createWindow() {
+  const isWin = process.platform === "win32";
+  const isMac = process.platform === "darwin";
+
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 720,
     minWidth: 780,
     minHeight: 560,
-    titleBarStyle: "hiddenInset",
+    titleBarStyle: isMac ? "hiddenInset" : "default",
+    frame: isWin ? false : true,
     backgroundColor: "#0d0d0d",
     autoHideMenuBar: true,
     webPreferences: {
@@ -57,6 +61,13 @@ app.on("will-quit", () => {
 });
 
 ipcMain.handle("get-api-port", () => apiServer?.port ?? 3847);
+ipcMain.handle("get-platform", () => process.platform);
+ipcMain.handle("win-minimize", () => mainWindow?.minimize());
+ipcMain.handle("win-maximize", () => {
+  if (mainWindow?.isMaximized()) mainWindow.unmaximize();
+  else mainWindow?.maximize();
+});
+ipcMain.handle("win-close", () => mainWindow?.close());
 
 ipcMain.handle("open-downloads", () => {
   const dir = store.get("downloadDir", app.getPath("music"));

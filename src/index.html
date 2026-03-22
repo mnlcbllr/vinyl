@@ -327,7 +327,21 @@
     </style>
   </head>
   <body class="bg-bg text-txt font-sans h-screen sm:overflow-hidden overflow-y-auto">
-    <div class="sm:h-full max-w-[960px] mx-auto px-4 md:px-6 pt-8 pb-5 flex flex-col sm:flex-row gap-4 md:gap-6">
+    <!-- Windows titlebar (hidden on macOS/Linux) -->
+    <div id="win-titlebar" class="hidden fixed top-0 left-0 right-0 h-8 bg-bg z-50 flex items-center justify-end select-none" style="-webkit-app-region: drag;">
+      <div class="flex items-center h-full" style="-webkit-app-region: no-drag;">
+        <button onclick="electronAPI.winMinimize()" class="h-full px-3.5 text-muted hover:bg-surface hover:text-txt transition-colors" title="Minimize">
+          <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
+        <button onclick="electronAPI.winMaximize()" class="h-full px-3.5 text-muted hover:bg-surface hover:text-txt transition-colors" title="Maximize">
+          <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
+        <button onclick="electronAPI.winClose()" class="h-full px-3.5 text-muted hover:bg-[#c42b1c] hover:text-white transition-colors" title="Close">
+          <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="main-container" class="sm:h-full max-w-[960px] mx-auto px-4 md:px-6 pt-8 pb-5 flex flex-col sm:flex-row gap-4 md:gap-6">
       <!-- LEFT COLUMN: Player -->
       <div class="w-full sm:w-[50%] md:w-[55%] flex flex-col sm:h-full min-w-0">
       <!-- Player area -->
@@ -1034,6 +1048,12 @@
       if (isElectron) {
         window.electronAPI.getApiPort().then((p) => {
           API_BASE = `http://localhost:${p}`;
+        });
+        window.electronAPI.getPlatform().then((plat) => {
+          if (plat === "win32") {
+            document.getElementById("win-titlebar").classList.remove("hidden");
+            document.getElementById("main-container").style.paddingTop = "2.5rem";
+          }
         });
       }
 

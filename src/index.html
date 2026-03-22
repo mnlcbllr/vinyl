@@ -1396,34 +1396,36 @@
         }
       }
 
-      // Resolve unknown durations for queued tracks in background (max 2 concurrent)
-      let _resolveActive = 0;
+      // Resolve unknown durations for queued tracks via single batch request
+      let _resolvePending = false;
       function resolveDurations() {
-        for (const tr of tracks) {
-          if (_resolveActive >= 2) break;
-          if (tr.ytId && (!tr.durSec || tr.dur === "?:??") && !tr._resolving) {
-            tr._resolving = true;
-            _resolveActive++;
-            fetch(`${API_BASE}/info?id=${encodeURIComponent(tr.ytId)}`)
-              .then((r) => r.json())
-              .then((data) => {
-                if (data.duration && data.duration > 0) {
-                  tr.durSec = data.duration;
-                  tr.dur = fmtTime(data.duration);
-                  renderQueue();
-                  if (tracks[currentTrack] === tr) {
-                    document.getElementById("time-tot").textContent = tr.dur;
-                  }
-                }
-              })
-              .catch(() => {})
-              .finally(() => {
-                tr._resolving = false;
-                _resolveActive--;
-                resolveDurations(); // pick up next one
-              });
-          }
-        }
+        if (_resolvePending) return;
+        const unresolved = tracks.filter(tr => tr.ytId && (!tr.durSec || tr.dur === "?:??") && !tr._resolving);
+        if (!unresolved.length) return;
+        _resolvePending = true;
+        // Mark all as resolving to prevent duplicate calls
+        unresolved.forEach(tr => { tr._resolving = true; });
+        const ids = unresolved.map(tr => tr.ytId).join(",");
+        fetch(`${API_BASE}/info-batch?ids=${encodeURIComponent(ids)}`)
+          .then(r => r.json())
+          .then(results => {
+            for (const data of results) {
+              if (!data.duration || data.duration <= 0) continue;
+              const tr = unresolved.find(t => t.ytId === data.id);
+              if (!tr) continue;
+              tr.durSec = data.duration;
+              tr.dur = fmtTime(data.duration);
+              if (tracks[currentTrack] === tr) {
+                document.getElementById("time-tot").textContent = tr.dur;
+              }
+            }
+            renderQueue();
+          })
+          .catch(() => {})
+          .finally(() => {
+            unresolved.forEach(tr => { tr._resolving = false; });
+            _resolvePending = false;
+          });
       }
 
       const QUEUE_MAX = 8;
@@ -1549,6 +1551,7 @@
 
         audio.src = src;
         audio.load();
+        audio.currentTime = 0;
         if (autoPlay) {
           audio.play().catch((err) => {
             if (err.name === "AbortError") {
@@ -1559,24 +1562,11 @@
           });
         }
 
-        // Prefetch next track's server-side CDN URL cache so it's ready when this one ends
+        // Predownload next track so it's ready when this one ends
         if (tracks.length > 1) predownloadTrack(tracks[1]);
 
-        // Fetch real duration from server if unknown
-        if (tr.ytId && (!tr.durSec || tr.dur === "?:??")) {
-          fetch(`${API_BASE}/info?id=${encodeURIComponent(tr.ytId)}`)
-            .then((r) => r.json())
-            .then((data) => {
-              if (myLoadId !== loadId) return; // stale
-              if (data.duration && data.duration > 0) {
-                tr.durSec = data.duration;
-                tr.dur = fmtTime(data.duration);
-                document.getElementById("time-tot").textContent = tr.dur;
-                renderQueue();
-              }
-            })
-            .catch(() => {});
-        }
+        // Delay duration resolution so ensureDownload has time to populate server cache
+        setTimeout(resolveDurations, 300);
 
         // Prefill queue in background after loading a track
         if (autoplay === "online") prefillQueue();

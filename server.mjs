@@ -5,6 +5,7 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 import { spawn } from "child_process";
+import { EventEmitter } from "events";
 import { Innertube, UniversalCache } from "youtubei.js";
 
 import { app as electronApp } from "electron";
@@ -47,6 +48,36 @@ async function getInnertube() {
     ytCreatedAt = Date.now();
   }
   return yt;
+}
+
+// ── Shared getInfo with promise deduplication ─────────────────────────
+const fullInfoCache = new Map();     // id → { info, ts }
+const fullInfoInFlight = new Map();  // id → Promise<info>
+const FULL_INFO_TTL = 30 * 60 * 1000;    // 30 minutes
+const FULL_INFO_MAX = 200;
+
+async function getFullInfo(id) {
+  const cached = fullInfoCache.get(id);
+  if (cached && Date.now() - cached.ts < FULL_INFO_TTL) return cached.info;
+
+  if (fullInfoInFlight.has(id)) return fullInfoInFlight.get(id);
+
+  const promise = (async () => {
+    const tube = await getInnertube();
+    const info = await tube.getInfo(id);
+    fullInfoCache.set(id, { info, ts: Date.now() });
+    if (fullInfoCache.size > FULL_INFO_MAX) {
+      fullInfoCache.delete(fullInfoCache.keys().next().value);
+    }
+    return info;
+  })();
+
+  fullInfoInFlight.set(id, promise);
+  try {
+    return await promise;
+  } finally {
+    fullInfoInFlight.delete(id);
+  }
 }
 
 // Recursively walk a directory and collect audio files (async, parallel subdirs)
@@ -353,12 +384,21 @@ export async function createServer() {
   }
 
   // GET /next?id= — returns "up next" related videos for autoplay
+  const nextCache = new Map();  // id → { related, ts }
+  const NEXT_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+
   app.get("/next", async (req, res) => {
     const id = (req.query.id || "").trim();
     if (!id) return res.status(400).json({ error: "Missing id" });
+
+    const cachedNext = nextCache.get(id);
+    if (cachedNext && Date.now() - cachedNext.ts < NEXT_CACHE_TTL) {
+      console.log("[next] cache hit for", id);
+      return res.json(cachedNext.related);
+    }
+
     try {
-      const tube = await getInnertube();
-      const info = await tube.getInfo(id);
+      const info = await getFullInfo(id);
       const feed = info.watch_next_feed ?? [];
 
       const related = feed
@@ -372,7 +412,7 @@ export async function createServer() {
         const nextId = autoVid?.payload?.videoId;
         if (nextId) {
           try {
-            const nextInfo = await tube.getInfo(nextId);
+            const nextInfo = await getFullInfo(nextId);
             const b = nextInfo.basic_info;
             if (b.id && (!b.duration || b.duration <= MAX_DUR) && !SKIP_TITLE_RE.test(b.title ?? "")) {
               related.push({
@@ -389,6 +429,7 @@ export async function createServer() {
         }
       }
 
+      nextCache.set(id, { related, ts: Date.now() });
       console.log("[next] returning", related.length, "related for", id);
       res.json(related);
     } catch (err) {
@@ -397,117 +438,85 @@ export async function createServer() {
     }
   });
 
+  // Shared video info cache — avoids duplicate tube.getInfo() calls
+  // ensureDownload already calls getInfo to resolve CDN URLs; cache the metadata too
+  const infoCache = new Map(); // id → { title, author, duration, thumb, ts }
+  const INFO_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
   // GET /info?id=
   app.get("/info", async (req, res) => {
     const id = (req.query.id || "").trim();
     if (!id) return res.status(400).json({ error: "Missing id" });
+
+    // Serve from cache if available
+    const cached = infoCache.get(id);
+    if (cached && Date.now() - cached.ts < INFO_CACHE_TTL) {
+      return res.json({ id, title: cached.title, author: cached.author, duration: cached.duration, thumb: cached.thumb });
+    }
+
     try {
-      const tube = await getInnertube();
-      const info = await tube.getInfo(id);
+      const info = await getFullInfo(id);
       const basic = info.basic_info;
-      res.json({
-        id: basic.id,
+      const data = {
         title: basic.title,
         author: basic.author,
         duration: basic.duration,
         thumb: basic.thumbnail?.[0]?.url ?? "",
-      });
+        ts: Date.now(),
+      };
+      infoCache.set(id, data);
+
+      // Also cache the CDN URL while we have the info object
+      try {
+        const tube = await getInnertube();
+        const format = info.chooseFormat({ type: "audio", quality: "best" });
+        const url = format?.decipher(tube.session.player);
+        if (url && !url.includes(".m3u8") && !url.includes("/manifest/")) {
+          if (!app._urlCache) app._urlCache = new Map();
+          app._urlCache.set(id, { url, ts: Date.now() });
+        }
+      } catch {}
+
+      res.json({ id: basic.id, title: data.title, author: data.author, duration: data.duration, thumb: data.thumb });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // GET /get-url?id=
-  // Uses yt-dlp --get-url to get the direct CDN audio URL.
-  // The client sets this as audio.src — Chromium handles range requests natively → seeking works.
-  app.get("/get-url", async (req, res) => {
-    const id = (req.query.id || "").trim();
-    if (!id) return res.status(400).json({ error: "Missing id" });
-
-    // Cache CDN URLs for 5 hours (they expire ~6h)
-    if (!app._urlCache) app._urlCache = new Map();
-    const cached = app._urlCache.get(id);
-    if (cached && Date.now() - cached.ts < 5 * 60 * 60 * 1000) {
-      return res.json({ url: cached.url });
-    }
-
-    try {
-      // Primary: Use youtubei.js (more reliable for direct URLs)
-      const tube = await getInnertube();
-      const info = await tube.getInfo(id);
-      const format = info.chooseFormat({ type: "audio", quality: "best" });
-      const url = format?.decipher(tube.session.player);
-
-      // Reject HLS manifests — Chromium can't play them as <audio> src
-      if (url && !url.includes(".m3u8") && !url.includes("/manifest/")) {
-        app._urlCache.set(id, { url, ts: Date.now() });
-        return res.json({ url });
+  // GET /info-batch?ids=X,Y,Z — resolve multiple track durations in one call
+  app.get("/info-batch", async (req, res) => {
+    const ids = (req.query.ids || "").split(",").map(s => s.trim()).filter(Boolean).slice(0, 10);
+    if (!ids.length) return res.status(400).json({ error: "Missing ids" });
+    const results = await Promise.allSettled(ids.map(async (id) => {
+      const cached = infoCache.get(id);
+      if (cached && Date.now() - cached.ts < INFO_CACHE_TTL) {
+        return { id, title: cached.title, author: cached.author, duration: cached.duration, thumb: cached.thumb };
       }
-      throw new Error(
-        url
-          ? "Got HLS URL, need direct stream"
-          : "No direct audio URL from youtubei.js",
-      );
-    } catch (err) {
-      console.warn(
-        "[get-url] youtubei.js failed, falling back to yt-dlp:",
-        err.message,
-      );
-      try {
-        const url = await new Promise((resolve, reject) => {
-          const proc = spawn("yt-dlp", [
-            `https://www.youtube.com/watch?v=${id}`,
-            "-f",
-            "ba[ext=m4a][protocol!=m3u8_native][protocol!=m3u8]/ba[ext=mp4][protocol!=m3u8_native][protocol!=m3u8]/ba[protocol!=m3u8_native][protocol!=m3u8]/ba",
-            "--get-url",
-            "--no-playlist",
-            "-q",
-            "--no-warnings",
-          ]);
-          let out = "",
-            errOut = "";
-          proc.stdout.on("data", (d) => {
-            out += d.toString();
-          });
-          proc.stderr.on("data", (d) => {
-            errOut += d.toString();
-          });
-          proc.on("error", reject);
-          proc.on("close", (code) => {
-            const u = out.trim().split("\n")[0];
-            if (u && code === 0) {
-              // Reject HLS URLs — Chromium can't play them as <audio> src
-              if (u.includes(".m3u8") || u.includes("/manifest/")) {
-                reject(new Error("yt-dlp returned HLS URL"));
-              } else {
-                resolve(u);
-              }
-            } else reject(new Error(errOut.trim() || `yt-dlp exited ${code}`));
-          });
-        });
-        app._urlCache.set(id, { url, ts: Date.now() });
-        res.json({ url });
-      } catch (err2) {
-        console.error("[get-url] both methods failed:", err2.message);
-        res.status(500).json({ error: err2.message });
-      }
-    }
+      const info = await getFullInfo(id);
+      const basic = info.basic_info;
+      const data = { title: basic.title, author: basic.author, duration: basic.duration, thumb: basic.thumbnail?.[0]?.url ?? "" };
+      infoCache.set(id, { ...data, ts: Date.now() });
+      return { id, ...data };
+    }));
+    res.json(results.filter(r => r.status === "fulfilled").map(r => r.value));
   });
 
   const STREAM_CACHE_MAX = 50;
-  const streamCache = new Map(); // id → filePath (only fully downloaded files)
-  const preloadInFlight = new Map(); // id → Promise (tracks currently being preloaded)
+  const streamCache = new Map();   // id → filePath (fully downloaded)
+  const activeDownloads = new Map(); // id → { emitter, contentType, contentLength }
 
-  // Background download helper — resolves when file is fully cached
-  async function backgroundDownload(id) {
+  // Shared download that emits chunks in real-time.
+  // Both /preload and /stream use this — only one download per id at a time.
+  function ensureDownload(id) {
+    if (activeDownloads.has(id)) return activeDownloads.get(id);
+
     const tmpDir = path.join(os.tmpdir(), "vinyl-stream");
     fs.mkdirSync(tmpDir, { recursive: true });
     const filePath = path.join(tmpDir, `${id}.m4a`);
 
-    // Already cached
-    if (streamCache.has(id) && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-      return filePath;
-    }
+    const dl = { emitter: new EventEmitter(), contentType: "audio/mp4", contentLength: null, chunks: [] };
+    dl.emitter.setMaxListeners(20);
+    activeDownloads.set(id, dl);
 
     // Evict oldest if full
     if (streamCache.size >= STREAM_CACHE_MAX && !streamCache.has(id)) {
@@ -516,237 +525,188 @@ export async function createServer() {
       streamCache.delete(oldest);
     }
 
-    // Try youtubei.js CDN URL first
-    let cdnUrl = null;
-    if (!app._urlCache) app._urlCache = new Map();
-    const cached = app._urlCache.get(id);
-    if (cached && Date.now() - cached.ts < 5 * 60 * 60 * 1000) {
-      cdnUrl = cached.url;
-    } else {
-      try {
-        const tube = await getInnertube();
-        const info = await tube.getInfo(id);
-        const format = info.chooseFormat({ type: "audio", quality: "best" });
-        const url = format?.decipher(tube.session.player);
-        if (url && !url.includes(".m3u8") && !url.includes("/manifest/")) {
-          cdnUrl = url;
-          app._urlCache.set(id, { url, ts: Date.now() });
-        }
-      } catch (e) {
-        console.warn("[preload] youtubei.js failed:", e.message);
-      }
-    }
+    const run = async () => {
+      // Resolve CDN URL
+      let cdnUrl = null;
+      if (!app._urlCache) app._urlCache = new Map();
+      const cached = app._urlCache.get(id);
+      if (cached && Date.now() - cached.ts < 5 * 60 * 60 * 1000) {
+        cdnUrl = cached.url;
+      } else {
+        try {
+          const info = await getFullInfo(id);
 
-    if (cdnUrl) {
-      try {
-        const upstream = await fetch(cdnUrl);
-        if (!upstream.ok) throw new Error(`CDN ${upstream.status}`);
+          // Cache video metadata so /info doesn't need a separate call
+          const basic = info.basic_info;
+          if (basic) {
+            infoCache.set(id, {
+              title: basic.title, author: basic.author,
+              duration: basic.duration, thumb: basic.thumbnail?.[0]?.url ?? "",
+              ts: Date.now(),
+            });
+          }
+
+          const tube = await getInnertube();
+          const format = info.chooseFormat({ type: "audio", quality: "best" });
+          const url = format?.decipher(tube.session.player);
+          if (url && !url.includes(".m3u8") && !url.includes("/manifest/")) {
+            cdnUrl = url;
+            app._urlCache.set(id, { url, ts: Date.now() });
+          }
+        } catch (e) {
+          console.warn("[download] youtubei.js failed:", e.message);
+        }
+      }
+
+      if (cdnUrl) {
+        try {
+          const upstream = await fetch(cdnUrl);
+          if (!upstream.ok) throw new Error(`CDN ${upstream.status}`);
+          dl.contentType = upstream.headers.get("content-type") || "audio/mp4";
+          dl.contentLength = upstream.headers.get("content-length") || null;
+          dl.emitter.emit("headers");
+
+          const fileWrite = fs.createWriteStream(filePath);
+          const reader = upstream.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fileWrite.write(value);
+            dl.chunks.push(value);
+            dl.emitter.emit("chunk", value);
+          }
+          await new Promise((resolve) => fileWrite.end(resolve));
+          if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
+            streamCache.set(id, filePath);
+            console.log("[download] cached", id);
+          }
+          dl.chunks.length = 0;
+          dl.emitter.emit("end");
+          return;
+        } catch (e) {
+          console.warn("[download] CDN failed, falling back to yt-dlp:", e.message);
+        }
+      }
+
+      // Fallback: yt-dlp piped to stdout
+      dl.emitter.emit("headers");
+      await new Promise((resolve) => {
+        const proc = spawn("yt-dlp", [
+          `https://www.youtube.com/watch?v=${id}`,
+          "-f", "ba[ext=m4a]/ba[ext=webm]/ba",
+          "-o", "-",
+          "--no-playlist", "-q", "--no-warnings",
+        ]);
         const fileWrite = fs.createWriteStream(filePath);
-        const reader = upstream.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          fileWrite.write(value);
-        }
-        await new Promise((resolve) => fileWrite.end(resolve));
-        if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-          streamCache.set(id, filePath);
-          console.log("[preload] cached", id);
-          return filePath;
-        }
-      } catch (e) {
-        console.warn("[preload] CDN download failed:", e.message);
-      }
-    }
+        let ok = true;
 
-    // Fallback: yt-dlp
-    return new Promise((resolve, reject) => {
-      const proc = spawn("yt-dlp", [
-        `https://www.youtube.com/watch?v=${id}`,
-        "-f", "ba[ext=m4a]/ba[ext=webm]/ba",
-        "-o", filePath,
-        "--no-playlist", "-q", "--no-warnings",
-      ]);
-      proc.on("error", reject);
-      proc.on("close", (code) => {
-        if (code === 0 && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-          streamCache.set(id, filePath);
-          console.log("[preload] cached (yt-dlp)", id);
-          resolve(filePath);
-        } else {
-          try { fs.unlinkSync(filePath); } catch {}
-          reject(new Error(`yt-dlp exited ${code}`));
-        }
+        proc.stdout.on("data", (chunk) => {
+          if (ok) fileWrite.write(chunk);
+          dl.chunks.push(chunk);
+          dl.emitter.emit("chunk", chunk);
+        });
+        proc.stderr.on("data", (d) => console.error("[stream]", d.toString().trim()));
+        proc.on("error", (err) => {
+          ok = false;
+          console.error("[stream spawn]", err.message);
+          dl.emitter.emit("error", err);
+          fileWrite.end();
+          resolve();
+        });
+        proc.on("close", (code) => {
+          fileWrite.end(() => {
+            if (code === 0 && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
+              streamCache.set(id, filePath);
+            } else {
+              try { fs.unlinkSync(filePath); } catch {}
+            }
+          });
+          dl.chunks.length = 0;
+          dl.emitter.emit("end");
+          resolve();
+        });
       });
-    });
+    };
+
+    run()
+      .catch((e) => {
+        console.error("[download] fatal:", e.message);
+        dl.emitter.emit("error", e);
+      })
+      .finally(() => activeDownloads.delete(id));
+
+    return dl;
   }
 
   // GET /preload?id= — trigger background download, respond immediately
   app.get("/preload", (req, res) => {
     const id = (req.query.id || "").trim();
     if (!id) return res.status(400).json({ error: "Missing id" });
-
-    // Already cached
     if (streamCache.has(id)) return res.json({ status: "cached" });
-
-    // Already in-flight
-    if (preloadInFlight.has(id)) return res.json({ status: "in_progress" });
-
-    // Start background download
-    const p = backgroundDownload(id)
-      .catch((e) => console.warn("[preload] failed:", id, e.message))
-      .finally(() => preloadInFlight.delete(id));
-    preloadInFlight.set(id, p);
-
+    ensureDownload(id);
     res.json({ status: "started" });
   });
 
   // GET /stream?id=
-  // Serves cached file if available, otherwise downloads and streams.
-
+  // Serves cached file instantly, or streams chunks in real-time from an active download.
   app.get("/stream", async (req, res) => {
     const id = (req.query.id || "").trim();
     if (!id) return res.status(400).end("Missing id");
 
     const tmpDir = path.join(os.tmpdir(), "vinyl-stream");
-    fs.mkdirSync(tmpDir, { recursive: true });
     const filePath = path.join(tmpDir, `${id}.m4a`);
 
-    // If already fully downloaded, serve with range support (seekable)
+    // Already fully cached → serve with range support
     if (streamCache.has(id) && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
       return res.sendFile(filePath);
     }
 
-    // If a preload is in-flight for this id, wait for it then serve the cached file
-    if (preloadInFlight.has(id)) {
-      try {
-        await preloadInFlight.get(id);
-        if (streamCache.has(id) && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-          return res.sendFile(filePath);
-        }
-      } catch {}
+    // Start or join an active download and stream chunks as they arrive
+    const dl = ensureDownload(id);
+
+    // Wait for headers to be ready
+    await new Promise((resolve) => {
+      if (dl.contentLength !== null || dl.contentType !== "audio/mp4") return resolve();
+      const onHeaders = () => resolve();
+      const onChunk = () => { dl.emitter.removeListener("headers", onHeaders); resolve(); };
+      const onEnd = () => { dl.emitter.removeListener("headers", onHeaders); resolve(); };
+      dl.emitter.once("headers", onHeaders);
+      dl.emitter.once("chunk", onChunk);
+      dl.emitter.once("end", onEnd);
+      dl.emitter.once("error", onEnd);
+    });
+
+    // If download finished while we waited, serve the file
+    if (streamCache.has(id) && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
+      return res.sendFile(filePath);
     }
 
-    // Evict oldest if full
-    if (streamCache.size >= STREAM_CACHE_MAX && !streamCache.has(id)) {
-      const oldest = streamCache.keys().next().value;
-      try { fs.unlinkSync(streamCache.get(oldest)); } catch {}
-      streamCache.delete(oldest);
-    }
-
-    // Try youtubei.js CDN URL first (much faster than spawning yt-dlp)
-    let cdnUrl = null;
-    if (!app._urlCache) app._urlCache = new Map();
-    const cached = app._urlCache.get(id);
-    if (cached && Date.now() - cached.ts < 5 * 60 * 60 * 1000) {
-      cdnUrl = cached.url;
-    } else {
-      try {
-        const tube = await getInnertube();
-        const info = await tube.getInfo(id);
-        const format = info.chooseFormat({ type: "audio", quality: "best" });
-        const url = format?.decipher(tube.session.player);
-        if (url && !url.includes(".m3u8") && !url.includes("/manifest/")) {
-          cdnUrl = url;
-          app._urlCache.set(id, { url, ts: Date.now() });
-        }
-      } catch (e) {
-        console.warn("[stream] youtubei.js URL resolve failed:", e.message);
-      }
-    }
-
-    if (cdnUrl) {
-      try {
-        const upstream = await fetch(cdnUrl);
-        if (!upstream.ok) throw new Error(`CDN returned ${upstream.status}`);
-
-        res.setHeader("Content-Type", upstream.headers.get("content-type") || "audio/mp4");
-        const contentLength = upstream.headers.get("content-length");
-        if (contentLength) res.setHeader("Content-Length", contentLength);
-        res.setHeader("Accept-Ranges", "none");
-        res.setHeader("Cache-Control", "no-cache");
-
-        const fileWrite = fs.createWriteStream(filePath);
-        let downloadOk = true;
-        let aborted = false;
-
-        req.on("close", () => {
-          aborted = true;
-          downloadOk = false;
-          fileWrite.end();
-        });
-
-        const reader = upstream.body.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done || aborted) break;
-            if (!res.writableEnded) res.write(value);
-            if (downloadOk) fileWrite.write(value);
-          }
-        } catch (e) {
-          downloadOk = false;
-          console.error("[stream proxy]", e.message);
-        }
-
-        fileWrite.end(() => {
-          if (downloadOk && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-            streamCache.set(id, filePath);
-          } else {
-            try { fs.unlinkSync(filePath); } catch {}
-          }
-        });
-        try { res.end(); } catch {}
-        return;
-      } catch (e) {
-        console.warn("[stream] CDN proxy failed, falling back to yt-dlp:", e.message);
-      }
-    }
-
-    // Fallback: pipe yt-dlp stdout directly to response
-    res.setHeader("Content-Type", "audio/mp4");
+    res.setHeader("Content-Type", dl.contentType);
+    if (dl.contentLength) res.setHeader("Content-Length", dl.contentLength);
     res.setHeader("Accept-Ranges", "none");
     res.setHeader("Cache-Control", "no-cache");
 
-    const proc = spawn("yt-dlp", [
-      `https://www.youtube.com/watch?v=${id}`,
-      "-f", "ba[ext=m4a]/ba[ext=webm]/ba",
-      "-o", "-",
-      "--no-playlist",
-      "-q", "--no-warnings",
-    ]);
+    // Send any chunks that were already downloaded before we subscribed
+    for (const chunk of dl.chunks) {
+      if (res.writableEnded) break;
+      res.write(chunk);
+    }
 
-    const fileWrite = fs.createWriteStream(filePath);
-    let downloadOk = true;
+    const onChunk = (chunk) => { if (!res.writableEnded) res.write(chunk); };
+    const onEnd = () => { try { res.end(); } catch {} cleanup(); };
+    const onError = () => { try { res.end(); } catch {} cleanup(); };
 
-    proc.stdout.on("data", (chunk) => {
-      if (!res.writableEnded) res.write(chunk);
-      if (downloadOk) fileWrite.write(chunk);
-    });
+    function cleanup() {
+      dl.emitter.removeListener("chunk", onChunk);
+      dl.emitter.removeListener("end", onEnd);
+      dl.emitter.removeListener("error", onError);
+    }
 
-    proc.stderr.on("data", (d) => console.error("[stream]", d.toString().trim()));
+    dl.emitter.on("chunk", onChunk);
+    dl.emitter.once("end", onEnd);
+    dl.emitter.once("error", onError);
 
-    proc.on("error", (err) => {
-      downloadOk = false;
-      console.error("[stream spawn]", err.message);
-      if (!res.headersSent) res.status(500).end(err.message);
-      fileWrite.end();
-    });
-
-    proc.on("close", (code) => {
-      fileWrite.end(() => {
-        if (code === 0 && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-          streamCache.set(id, filePath);
-        } else {
-          try { fs.unlinkSync(filePath); } catch {}
-        }
-      });
-      try { res.end(); } catch {}
-    });
-
-    req.on("close", () => {
-      try { proc.kill("SIGTERM"); } catch {}
-    });
+    req.on("close", cleanup);
   });
 
   // GET /local?path=

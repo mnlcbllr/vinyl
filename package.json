@@ -29,6 +29,7 @@
       "src/index.html",
       "src/output.css",
       "src/fonts/**/*",
+      "build/icons/256x256.png",
       "node_modules/**/*"
     ],
     "win": {

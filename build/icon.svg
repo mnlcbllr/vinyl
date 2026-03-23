@@ -1,16 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="100" fill="#0d0d0d"/>
-  <!-- Album sleeve (left half) -->
-  <rect x="56" y="80" width="220" height="352" rx="8" fill="#2e2e2e" stroke="#555353" stroke-width="6"/>
-  <line x1="100" y1="180" x2="200" y2="180" stroke="#555353" stroke-width="5" opacity="0.4"/>
-  <line x1="100" y1="210" x2="170" y2="210" stroke="#555353" stroke-width="5" opacity="0.4"/>
-  <!-- Vinyl disc (right half) -->
-  <clipPath id="vc"><rect x="256" y="50" width="256" height="412"/></clipPath>
+  <!-- Vinyl disc (behind sleeve, right-shifted) -->
+  <clipPath id="vc"><rect x="256" y="0" width="256" height="512"/></clipPath>
   <g clip-path="url(#vc)">
-    <circle cx="300" cy="256" r="180" fill="#0d0d0d" stroke="#555353" stroke-width="5"/>
-    <circle cx="300" cy="256" r="130" stroke="#555353" stroke-width="2" opacity="0.35" fill="none"/>
-    <circle cx="300" cy="256" r="95" stroke="#555353" stroke-width="2" opacity="0.3" fill="none"/>
-    <circle cx="300" cy="256" r="55" fill="#555353" opacity="0.9"/>
-    <circle cx="300" cy="256" r="14" fill="#0d0d0d"/>
+    <circle cx="296" cy="256" r="150" fill="#1a1a1a" stroke="#555353" stroke-width="4"/>
+    <circle cx="296" cy="256" r="115" stroke="#555353" stroke-width="1.5" opacity="0.3" fill="none"/>
+    <circle cx="296" cy="256" r="80" stroke="#555353" stroke-width="1.5" opacity="0.25" fill="none"/>
+    <circle cx="296" cy="256" r="45" fill="#555353" opacity="0.9"/>
+    <circle cx="296" cy="256" r="12" fill="#0d0d0d"/>
   </g>
+  <!-- Album sleeve (same height as disc diameter = 300) -->
+  <rect x="106" y="106" width="190" height="300" rx="8" fill="#2e2e2e" stroke="#555353" stroke-width="5"/>
+  <line x1="140" y1="200" x2="230" y2="200" stroke="#555353" stroke-width="5" opacity="0.4"/>
+  <line x1="140" y1="226" x2="200" y2="226" stroke="#555353" stroke-width="5" opacity="0.4"/>
 </svg>

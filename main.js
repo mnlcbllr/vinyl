@@ -2,6 +2,8 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("path");
 const Store = require("electron-store");
 
+app.commandLine.appendSwitch("enable-features", "MediaSessionService");
+
 const store = new Store();
 let mainWindow;
 let apiServer;
@@ -34,8 +36,17 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "src", "index.html"));
 
-  if (process.argv.includes("--dev")) {
+  const isDev = process.argv.includes("--dev");
+
+  if (isDev) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
+  } else {
+    mainWindow.webContents.on("before-input-event", (_e, input) => {
+      if (input.key === "F12" ||
+          (input.control && input.shift && (input.key === "I" || input.key === "J"))) {
+        _e.preventDefault();
+      }
+    });
   }
 }
 

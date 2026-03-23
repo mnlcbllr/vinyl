@@ -1899,7 +1899,13 @@
         }
       }
 
-      audio.addEventListener("play", syncPlayUI);
+      audio.addEventListener("play", () => {
+        syncPlayUI();
+        if (tracks.length) updateMediaSession(tracks[0]);
+      });
+      audio.addEventListener("playing", () => {
+        if (tracks.length) updateMediaSession(tracks[0]);
+      });
       audio.addEventListener("pause", syncPlayUI);
 
       function togglePlay() {
@@ -1940,8 +1946,10 @@
               if (!tr) continue;
               tr.durSec = data.duration;
               tr.dur = fmtTime(data.duration);
+              if (data.thumb && !tr.thumb) tr.thumb = data.thumb;
               if (tracks[currentTrack] === tr) {
                 document.getElementById("time-tot").textContent = tr.dur;
+                updateMediaSession(tr);
               }
             }
             renderQueue();
@@ -2127,6 +2135,26 @@
         }
       }
 
+      // ── MediaSession (OS media controls) ──────────────────────────────
+      function updateMediaSession(tr) {
+        if (!("mediaSession" in navigator) || !tr) return;
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: tr.title || "Unknown",
+          artist: tr.meta || "",
+          artwork: [{ src: `${API_BASE}/icon.png`, sizes: "256x256", type: "image/png" }],
+        });
+      }
+
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.setActionHandler("play", () => togglePlay());
+        navigator.mediaSession.setActionHandler("pause", () => togglePlay());
+        navigator.mediaSession.setActionHandler("previoustrack", () => prevTrack());
+        navigator.mediaSession.setActionHandler("nexttrack", () => nextTrack());
+        navigator.mediaSession.setActionHandler("seekto", (details) => {
+          if (details.seekTime != null) audio.currentTime = details.seekTime;
+        });
+      }
+
       function toggleShuffle() {
         shuffle = !shuffle;
         document
@@ -2188,6 +2216,7 @@
             dur: v.durStr || "?:??",
             durSec: v.duration || 0,
             ytId: v.id,
+            thumb: v.thumb || "",
           }));
         } catch (e) {
           console.warn("[autoplay] /next failed:", e.message);
@@ -2920,6 +2949,7 @@
               dur: durStr,
               durSec: durSec,
               ytId: item.id,
+              thumb: item.thumb || "",
             });
             closeSearch();
             skipToTrack(idx);
@@ -2934,6 +2964,7 @@
               dur: durStr,
               durSec: durSec,
               ytId: item.id,
+              thumb: item.thumb || "",
             });
             closeSearch();
             const btn = e.currentTarget;

@@ -11,6 +11,7 @@ import { Innertube, UniversalCache } from "youtubei.js";
 import { app as electronApp } from "electron";
 
 const PORT = 3847;
+const isWin = process.platform === "win32";
 let yt;
 
 // Audio file extensions to scan for
@@ -117,6 +118,13 @@ export async function createServer() {
 
   app.use(cors({ origin: "*" }));
   app.use(express.json());
+
+  // Serve the app icon for MediaSession artwork
+  app.get("/icon.png", (_req, res) => {
+    const iconPath = path.join(electronApp.getAppPath(), "build", "icons", "256x256.png");
+    if (fs.existsSync(iconPath)) return res.sendFile(iconPath);
+    res.status(404).end();
+  });
 
   // GET /hits — greatest hits / popular songs
   app.get("/hits", async (req, res) => {
@@ -363,7 +371,8 @@ export async function createServer() {
       }
       if (!isMusicVideo({ title, author, duration }, { lenient: true })) return null;
 
-      return { id: vid, title, author, duration, durStr: durStr || "?:??" };
+      const thumb = v.content_image?.image?.[0]?.url ?? v.thumbnails?.[0]?.url ?? "";
+      return { id: vid, title, author, duration, durStr: durStr || "?:??", thumb };
     }
 
     // Legacy format (CompactVideo, etc.)
@@ -380,6 +389,7 @@ export async function createServer() {
       author,
       duration,
       durStr: v.duration?.text ?? "?:??",
+      thumb: v.thumbnails?.[0]?.url ?? "",
     };
   }
 
@@ -596,7 +606,7 @@ export async function createServer() {
           "-f", "ba[ext=m4a]/ba[ext=webm]/ba",
           "-o", "-",
           "--no-playlist", "-q", "--no-warnings",
-        ]);
+        ], { shell: isWin });
         const fileWrite = fs.createWriteStream(filePath);
         let ok = true;
 
@@ -781,7 +791,7 @@ export async function createServer() {
       outPath,
       "--no-playlist",
       "--newline",
-    ]);
+    ], { shell: isWin });
 
     let stderrBuf = "";
     proc.stderr.on("data", (d) => {
@@ -818,7 +828,11 @@ export async function createServer() {
 
     req.on("close", () => {
       try {
-        proc.kill("SIGTERM");
+        if (isWin) {
+          spawn("taskkill", ["/pid", String(proc.pid), "/f", "/t"], { shell: true });
+        } else {
+          proc.kill("SIGTERM");
+        }
       } catch {}
     });
   });

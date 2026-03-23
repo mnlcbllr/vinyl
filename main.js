@@ -23,6 +23,8 @@ function createWindow() {
     height: 720,
     minWidth: 780,
     minHeight: 560,
+    fullscreen: false,
+    fullscreenable: false,
     titleBarStyle: isMac ? "hiddenInset" : "default",
     frame: isWin ? false : true,
     backgroundColor: "#0d0d0d",

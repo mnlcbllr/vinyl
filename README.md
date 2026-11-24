@@ -94,6 +94,11 @@ npm run build:all
 
 Output goes to `./dist/`.
 
+## Project links
+
+- [Vinyl project overview](https://manuelcaballero.dev/projects/vinyl)
+- [Manuel Caballero — Full-Stack AI Engineer](https://manuelcaballero.dev)
+
 ## License
 
 MIT
